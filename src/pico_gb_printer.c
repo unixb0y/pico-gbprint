@@ -13,8 +13,6 @@
 #include "linkcable.h"
 #include "globals.h"
 
-#define BUFFER_SIZE_KB 176
-
 //bool debug_enable = ENABLE_DEBUG;
 bool speed_240_MHz = false;
 
@@ -23,6 +21,12 @@ volatile uint32_t receive_data_pointer = 0;
 uint8_t receive_data[BUFFER_SIZE_KB * 1024] = {};    // buffer length is 96K
 
 uint8_t json_buffer[1024] = {0};                // buffer for rendering of status json
+uint8_t buffer0[5200] = {0};
+uint8_t buffer1[5200] = {0};
+uint8_t buf0done = false;
+uint8_t buf1done = false;
+uint16_t buf0_len = 0;
+uint16_t buf1_len = 0;
 
 void receive_data_reset(void) {
     receive_data_pointer = 0;
@@ -34,23 +38,24 @@ void receive_data_write(uint8_t b) {
 }
 
 void receive_data_commit(void) {
-    // TODO: Get data when this is done and print it.
-    printf("Done printing...(?)\n");
-    uint8_t mybuf[50000];
-    uint16_t len = receive_data_pointer;
-    printf("Data length: %d\n", len);
-    for(uint16_t i=0; i<len; i++) {
-        memcpy(&mybuf[i], &receive_data[i], 1);
+    printf("Got a chunk of data... %d\n", receive_data_pointer);
+    if (!buf0done) {
+        buf0_len = receive_data_pointer;
+        printf("Data length: %d\n", buf0_len);
+        for(uint16_t i=0; i<buf0_len; i++) {
+            memcpy(&buffer0[i], &receive_data[i], 1);
+        }
+        buf0done = true;
+    }
+    else {
+        buf1_len = receive_data_pointer;
+        printf("Data length: %d\n", buf1_len);
+        for(uint16_t i=0; i<buf1_len; i++) {
+            memcpy(&buffer1[i], &receive_data[i], 1);
+        }
+        buf1done = true;
     }
     receive_data_reset();
-    //uart_write_blocking(uart1, receive_data, receive_data_pointer);
-    char stringbuffer[100000];
-    for(uint16_t i=0; i<len; i++) {
-        sprintf(&stringbuffer[2*i], "%02X", mybuf[i]);
-    }
-    printf(stringbuffer);
-    printf("\n------\n");
-    //receive_data_reset();
 }
 
 // link cable
