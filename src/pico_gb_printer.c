@@ -15,46 +15,35 @@
 
 //bool debug_enable = ENABLE_DEBUG;
 bool speed_240_MHz = false;
+void print_image(uint8_t *data, size_t data_len);
 
 // storage implementation
 volatile uint32_t receive_data_pointer = 0;
 uint8_t receive_data[BUFFER_SIZE_KB * 1024] = {};    // buffer length is 96K
-
-uint8_t json_buffer[1024] = {0};                // buffer for rendering of status json
-uint8_t buffer0[5200] = {0};
-uint8_t buffer1[5200] = {0};
-uint8_t buf0done = false;
-uint8_t buf1done = false;
-uint16_t buf0_len = 0;
-uint16_t buf1_len = 0;
+uint16_t idle_len = 0;
+uint32_t last_word = 0;
 
 void receive_data_reset(void) {
     receive_data_pointer = 0;
 }
 
 void receive_data_write(uint8_t b) {
-    if (receive_data_pointer < sizeof(receive_data))
-         receive_data[receive_data_pointer++] = b;
+    if (idle_len){
+        if (receive_data_pointer < sizeof(receive_data))
+            receive_data[receive_data_pointer++] = b;
+        idle_len--;
+    }else{
+        if ((last_word>>16) == 0x0400){
+            idle_len = last_word & 0xffff;
+        }
+    }
+    last_word <<= 8;   
+    last_word |= b;
 }
 
 void receive_data_commit(void) {
     printf("Got a chunk of data... %d\n", receive_data_pointer);
-    if (!buf0done) {
-        buf0_len = receive_data_pointer;
-        printf("Data length: %d\n", buf0_len);
-        for(uint16_t i=0; i<buf0_len; i++) {
-            memcpy(&buffer0[i], &receive_data[i], 1);
-        }
-        buf0done = true;
-    }
-    else {
-        buf1_len = receive_data_pointer;
-        printf("Data length: %d\n", buf1_len);
-        for(uint16_t i=0; i<buf1_len; i++) {
-            memcpy(&buffer1[i], &receive_data[i], 1);
-        }
-        buf1done = true;
-    }
+    print_image(receive_data,receive_data_pointer);
     receive_data_reset();
 }
 

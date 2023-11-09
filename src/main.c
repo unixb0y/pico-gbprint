@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <host/hcd.h>
+#include <tusb.h>
+
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 #include "hardware/timer.h"
@@ -10,11 +13,19 @@
 #include "linkcable.h"
 #include "mew.h"
 
+#define info(a ...) printf("[gbprinter] " a)
+
 void link_cable_ISR(void);
 int64_t link_cable_watchdog(alarm_id_t id, void *user_data);
 
-void print(uint8_t *data) {
-    uint16_t tilebuffer_size = sizeof(mew_tile_data);
+tusb_desc_device_t desc_device = {};
+int16_t gDaddr = -1;
+
+#define LANGUAGE_ID 0x0409  // English
+
+
+void print_image(uint8_t *data, size_t data_len) {
+    uint16_t tilebuffer_size = data_len;
     uint16_t bit_size = tilebuffer_size*4; // 8 bits per byte, 2 bits per pixel 
     uint16_t tile_count = tilebuffer_size/16;
 
@@ -150,8 +161,9 @@ int main() {
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
     stdio_init_all();
-    stdio_uart_init_full(uart0, PICO_DEFAULT_UART_BAUD_RATE,
-        UART_DEBUG_TX, UART_DEBUG_RX);
+    stdio_uart_init_full(uart0, PICO_DEFAULT_UART_BAUD_RATE, UART_DEBUG_TX, UART_DEBUG_RX);
+
+    tusb_init();
 
     // Link cable initialization
     sleep_ms(500);
@@ -164,54 +176,174 @@ int main() {
     gpio_set_function(UART_PRINT_TX, GPIO_FUNC_UART);
     gpio_set_function(UART_PRINT_RX, GPIO_FUNC_UART);
     //uart_puts(uart1, "Hello World..\n\n\n");
-    //print(mew_tile_data);
 
-    extern uint8_t buffer0[];
-    extern uint8_t buffer1[];
+    info("--- gbprinter start ----\n");
 
     while (true) {
-        if (buffer1[0] != 0) {
-            printf("Done printing...\n----------\n");
-
-            // allocate 2BPP image buffer
-            uint8_t databuffer[192*160*2/8];
-            uint32_t data_counter = 0;
-            uint32_t data_idx = 0;
-
-            // protocol:
-            // 0400
-            // 8002 (0x0280 = 640 bytes)
-            // packet of tile data (640 bytes)
-            // repeat
-            for (uint16_t i=0; i<5157; i++) {
-                if (i+7 >= 5157) break; // end of whole dump
-                if (buffer0[i] == 0x04 && buffer0[i+1] == 0x00) {
-                    uint16_t packet_length = buffer0[i+3]<<8 | buffer0[i+2];
-                    data_counter += packet_length;
-                    i+=4; // skip packet start bytes
-                    for (uint16_t j=0; j<packet_length; j++) {
-                        memcpy(&databuffer[data_idx+j], &buffer0[i+j], 1);
-                    }
-                    data_idx += packet_length;
-                }
-            }
-
-            for (uint16_t i=7; i<2588; i++) {
-                if (i+7 >= 2588) break;
-                if (buffer1[i] == 0x04 && buffer1[i+1] == 0x00) {
-                    uint16_t packet_length = buffer1[i+3]<<8 | buffer1[i+2];
-                    data_counter += packet_length;
-                    i+=4; // skip chunk start bytes
-                    for (uint16_t j=0; j<packet_length; j++) {
-                        memcpy(&databuffer[data_idx+j], &buffer1[i+j], 1);
-                    }
-                    data_idx += packet_length;
-                }
-            }
-
-            print((uint8_t *)databuffer);
-            return 0;
-        }
+        tuh_task();                            
     }
+
     return 0;
+}
+
+#pragma mark function definitions
+
+// Count how many bytes a utf-16-le encoded string will take in utf-8.
+static int _count_utf8_bytes(const uint16_t *buf, size_t len) {
+  size_t total_bytes = 0;
+  for (size_t i = 0; i < len; i++) {
+    uint16_t chr = buf[i];
+    if (chr < 0x80) {
+      total_bytes += 1;
+    } else if (chr < 0x800) {
+      total_bytes += 2;
+    } else {
+      total_bytes += 3;
+    }
+    // TODO: Handle UTF-16 code points that take two entries.
+  }
+  return total_bytes;
+}
+
+static void _convert_utf16le_to_utf8(const uint16_t *utf16, size_t utf16_len, uint8_t *utf8, size_t utf8_len) {
+  // TODO: Check for runover.
+  (void)utf8_len;
+  // Get the UTF-16 length out of the data itself.
+
+  for (size_t i = 0; i < utf16_len; i++) {
+    uint16_t chr = utf16[i];
+    if (chr < 0x80) {
+      *utf8++ = chr & 0xff;
+    } else if (chr < 0x800) {
+      *utf8++ = (uint8_t)(0xC0 | (chr >> 6 & 0x1F));
+      *utf8++ = (uint8_t)(0x80 | (chr >> 0 & 0x3F));
+    } else {
+      // TODO: Verify surrogate.
+      *utf8++ = (uint8_t)(0xE0 | (chr >> 12 & 0x0F));
+      *utf8++ = (uint8_t)(0x80 | (chr >> 6 & 0x3F));
+      *utf8++ = (uint8_t)(0x80 | (chr >> 0 & 0x3F));
+    }
+    // TODO: Handle UTF-16 code points that take two entries.
+  }
+}
+
+static void print_utf16(uint16_t *temp_buf, size_t buf_len) {
+  size_t utf16_len = ((temp_buf[0] & 0xff) - 2) / sizeof(uint16_t);
+  size_t utf8_len = _count_utf8_bytes(temp_buf + 1, utf16_len);
+
+  _convert_utf16le_to_utf8(temp_buf + 1, utf16_len, (uint8_t *) temp_buf, sizeof(uint16_t) * buf_len);
+  ((uint8_t*) temp_buf)[utf8_len] = '\0';
+
+  printf("%s",temp_buf);
+}
+
+void getPrinterInfo(uint8_t daddr){
+    char printerInfo[0x100] = {};
+
+    tusb_control_request_t const request ={
+        .bmRequestType_bit =
+        {
+            .recipient = TUSB_REQ_RCPT_INTERFACE,
+            .type      = TUSB_REQ_TYPE_CLASS,
+            .direction = TUSB_DIR_IN
+        },
+        .bRequest = 0,
+        .wValue   = 0,
+        .wIndex   = 0,
+        .wLength  = sizeof(printerInfo)
+    };
+
+    tuh_xfer_t xfer ={
+        .daddr       = daddr,
+        .ep_addr     = 0,
+        .setup       = &request,
+        .buffer      = printerInfo,
+        .complete_cb = NULL,
+        .user_data   = 0
+    };
+
+    bool ret = tuh_control_xfer(&xfer);
+    if (ret && xfer.actual_len){
+        size_t len = xfer.actual_len - 1;
+        info("Got printer info: '%.*s'\n",len,&printerInfo[1]);
+    }
+
+    ret = tuh_configuration_set(daddr, 1, NULL, 0);
+    if (!ret){
+        info("Failed to set config!");
+        return;
+    }
+    tusb_desc_endpoint_t ep =
+    {
+        .bLength          = sizeof(tusb_desc_endpoint_t),
+        .bDescriptorType  = TUSB_DESC_ENDPOINT,
+        .bEndpointAddress = 2,
+        .bmAttributes     = { .xfer = TUSB_XFER_BULK },
+        .wMaxPacketSize   = 0x40,
+        .bInterval        = 0
+    };
+    ret = tuh_edpt_open(daddr,&ep);
+    if (ret){
+        info("Successfully openend endpoin!");
+    }
+
+    info("PRINTER IS READY NOW!\n");
+    gDaddr = daddr;
+}
+
+void print_device_descriptor(tuh_xfer_t* xfer){
+  if ( XFER_RESULT_SUCCESS != xfer->result ){
+    printf("Failed to get device descriptor\n");
+    return;
+  }
+
+  uint8_t const daddr = xfer->daddr;
+
+  info("Device %u: ID %04x:%04x\n", daddr, desc_device.idVendor, desc_device.idProduct);
+  info("Device Descriptor:\n");
+  info("  bLength             %u\n"     , desc_device.bLength);
+  info("  bDescriptorType     %u\n"     , desc_device.bDescriptorType);
+  info("  bcdUSB              %04x\n"   , desc_device.bcdUSB);
+  info("  bDeviceClass        %u\n"     , desc_device.bDeviceClass);
+  info("  bDeviceSubClass     %u\n"     , desc_device.bDeviceSubClass);
+  info("  bDeviceProtocol     %u\n"     , desc_device.bDeviceProtocol);
+  info("  bMaxPacketSize0     %u\n"     , desc_device.bMaxPacketSize0);
+  info("  idVendor            0x%04x\n" , desc_device.idVendor);
+  info("  idProduct           0x%04x\n" , desc_device.idProduct);
+  info("  bcdDevice           %04x\n"   , desc_device.bcdDevice);
+    // Get String descriptor using Sync API
+  uint16_t temp_buf[128];
+
+  info("  iManufacturer       %u     "     , desc_device.iManufacturer);
+  if (XFER_RESULT_SUCCESS == tuh_descriptor_get_manufacturer_string_sync(daddr, LANGUAGE_ID, temp_buf, sizeof(temp_buf)) ){
+    print_utf16(temp_buf, TU_ARRAY_SIZE(temp_buf));
+  }
+  printf("\n");
+
+  info("  iProduct            %u     "     , desc_device.iProduct);
+  if (XFER_RESULT_SUCCESS == tuh_descriptor_get_product_string_sync(daddr, LANGUAGE_ID, temp_buf, sizeof(temp_buf))){
+    print_utf16(temp_buf, TU_ARRAY_SIZE(temp_buf));
+  }
+  printf("\n");
+
+  info("  iSerialNumber       %u     "     , desc_device.iSerialNumber);
+  if (XFER_RESULT_SUCCESS == tuh_descriptor_get_serial_string_sync(daddr, LANGUAGE_ID, temp_buf, sizeof(temp_buf))){
+    print_utf16(temp_buf, TU_ARRAY_SIZE(temp_buf));
+  }
+  printf("\n");
+
+  info("  bNumConfigurations  %u\n"     , desc_device.bNumConfigurations);
+
+  getPrinterInfo(daddr);
+}
+
+//tuh USB lowlevel
+void tuh_umount_cb(uint8_t daddr){
+    info("USB detach!\n");    
+    gDaddr = -1;
+}
+
+void tuh_mount_cb (uint8_t daddr){
+    info("USB attach!\n"); 
+    tuh_descriptor_get_device(daddr, &desc_device, sizeof(desc_device), print_device_descriptor, 0);
 }
