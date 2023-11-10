@@ -32,19 +32,23 @@ void receive_data_reset(void) {
 
 void receive_data_write(uint8_t b) {
     if (idle_len){
-        if (receive_data_pointer < sizeof(receive_data))
+        if (receive_data_pointer < sizeof(receive_data)) {
             receive_data[receive_data_pointer++] = b;
-    }else{
+            idle_len--;
+        }
+    }
+    else{
         cur_word <<= 8;   
         cur_word |= b;
-        if ((cur_word>>16) == 0x0400){
-            idle_len = (cur_word & 0xff)<<8 | ((cur_word>>8) & 0xff);
+        if ((cur_word) == 0x04008002){
+            idle_len = (cur_word & 0xff)<<8 | cur_word>>8;
         }
     }
 }
 
 void receive_data_commit(void) {
     printf("Got a chunk of data... %d\n", receive_data_pointer);
+
     isPrinting = true;
     print_image(receive_data,receive_data_pointer);
 }
