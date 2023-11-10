@@ -49,4 +49,5 @@ uint8_t protocol_data_init();
 uint8_t protocol_data_process(uint8_t data_in);
 void protocol_reset();
 
+void did_finish_printing();
 #endif

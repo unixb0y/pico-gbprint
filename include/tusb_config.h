@@ -45,6 +45,14 @@
 #define CFG_TUSB_MEM_ALIGN          __attribute__ ((aligned(4)))
 #endif
 
+#ifndef CFG_TUH_API_EDPT_XFER
+#define CFG_TUH_API_EDPT_XFER 1
+#endif
+
+#ifndef CFG_TUH_ENABLED
+#define CFG_TUH_ENABLED 1
+#endif
+
 //--------------------------------------------------------------------
 // CONFIGURATION
 //--------------------------------------------------------------------

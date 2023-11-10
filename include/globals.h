@@ -14,7 +14,8 @@
 #define UART_DEBUG_RX 13
 
 // Macros for bit operations on arrays
-#define SetBit(A, k)   (A[(k)/8] |= (1 << ((k)%8)))
+#define SetBit(A, k)    (A[(k)/8] |= (1 << ((k)%8)))
+#define SetBitBIG(A, k)   (A[(k)/8] |= (1 << (7-((k)%8))))
 #define ClearBit(A, k) (A[(k)/8] &= ~(1 << ((k)%8)))
 #define TestBit(A, k)  (A[(k)/8] & (1 << ((k)%8)))
 
