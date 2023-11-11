@@ -39,13 +39,10 @@ void print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
     gPringCFG = cfg;
 }
 
-void do_print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
-    printf("Printing a chunk of data... %d\n", data_len);
-    bool disableUSB = false;
+void do_print_image_uart(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
     uint16_t printerWidth = gPrinterWidth;
 
     if (printerWidth < 320){
-        disableUSB = true;
         printf("ERROR: usb printer width smaller than hardcoded with");
         printerWidth = 320;
     }
@@ -136,12 +133,6 @@ void do_print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) 
     // printf("\n-----\n");
 
 
-    // --- BEGIN USB PRINTING ---
-    if (!disableUSB){
-        printf("printing on USB!\n");
-        print_usb(scaled_bytes_nrm, scaled_bytes_count_nrm, 0, cfg->postPrintMargins*13);
-    }
-    // --- END USB PRINTING
     safeFree(scaled_bytes_nrm);
     safeFree(pixel_bytes_nrm);
 
@@ -235,6 +226,102 @@ void do_print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) 
     // --- END PRINTING ---
 
     safeFree(slice_bytes);
+}
+
+void do_print_image_usb(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
+    int err = 0;
+    //
+    uint8_t *printbuf = NULL;
+    size_t printBufSize = 0;
+    //
+    uint16_t tilebuffer_size = data_len;
+    uint16_t bit_size = tilebuffer_size*4; // 8 bits per byte, 2 bits per pixel 
+    uint16_t tile_count = tilebuffer_size/16;
+
+    // All GameBoy Color prints are 160px wide
+    uint16_t image_width = 160;
+    // 192px height for typical pokedex entry
+    uint16_t image_height = bit_size/image_width; 
+    // number of tiles in horizontal direction
+    uint16_t tile_width = image_width/8;
+    uint16_t image_size = image_width*image_height;
+
+    if (gPrinterWidth < 320){
+        printf("ERROR: usb printer width smaller than hardcoded with");
+        return;
+    }
+
+    printBufSize = (gPrinterWidth*image_height)*2/8;
+    printbuf = calloc(printBufSize, 1);
+
+    for (uint16_t t=0; t<tile_count; t++) {
+        uint8_t tile_x = t%tile_width;
+        uint8_t tile_y = t/tile_width;
+
+        for (uint8_t i=0; i<8; i++) {
+            uint16_t byte0_idx = t*16 + i*2;
+            uint16_t byte1_idx = t*16 + i*2+1;
+
+            uint8_t byte0 = data[byte0_idx];
+            uint8_t byte1 = data[byte1_idx];
+
+            for (uint8_t j=0; j<8; j++) {
+                uint16_t offset_printbit = tile_x*8 + i*2*image_width/2 + j + tile_y*tile_width*64;
+                uint8_t pixelVal = (((byte0 >> (8-1-j)) & 1) << 1 | ((byte1 >> (8-1-j)) & 1));
+                uint16_t bit_idx = offset_printbit;
+
+                uint32_t w = offset_printbit % image_width;
+                uint32_t h = offset_printbit / image_width;
+
+                switch (pixelVal){
+                    case 1:
+                        SetBitBIG(printbuf, (2*h+0)*gPrinterWidth + 2*w+0);
+                        break;
+                    case 2:
+                        SetBitBIG(printbuf, (2*h+0)*gPrinterWidth + 2*w+1);
+                        SetBitBIG(printbuf, (2*h+1)*gPrinterWidth + 2*w+0);
+                        break;
+
+                    case 3:
+                        SetBitBIG(printbuf, (2*h+0)*gPrinterWidth + 2*w+0);
+                        SetBitBIG(printbuf, (2*h+0)*gPrinterWidth + 2*w+1);
+                        SetBitBIG(printbuf, (2*h+1)*gPrinterWidth + 2*w+0);
+                        SetBitBIG(printbuf, (2*h+1)*gPrinterWidth + 2*w+1);
+                        break;
+
+                    default:
+                        break;
+                }           
+            }
+        }
+    }
+
+    // for(int i=0; i<printBufSize; i++) {
+    //     uint8_t b = printbuf[printBufSize-1-i];
+    //     printf("%d%d%d%d%d%d%d%d",  (b >> 7) & 1,
+    //                                 (b >> 6) & 1,
+    //                                 (b >> 5) & 1,
+    //                                 (b >> 4) & 1,
+    //                                 (b >> 3) & 1,
+    //                                 (b >> 2) & 1,
+    //                                 (b >> 1) & 1,
+    //                                 (b >> 0) & 1);
+    // }
+    // printf("\n-----\n");
+
+
+    printf("printing on USB!\n");
+    print_usb(printbuf, printBufSize, 0, cfg->postPrintMargins*13);
+error:
+    safeFree(printbuf);
+}
+
+void do_print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
+    printf("Printing a chunk of data... %d\n", data_len);
+    do_print_image_usb(data,data_len,cfg);
+#ifdef ENABLE_UART_PRINTING
+    do_print_image_uart(data,data_len,cfg);
+#endif
 }
 
 int main() {
