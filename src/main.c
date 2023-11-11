@@ -14,12 +14,14 @@
 #include "mew.h"
 #include "gb_printer.h"
 
+// #define ENABLE_UART_PRINTING
+
 #define info(a ...) printf("[gbprinter] " a)
 #define safeFree(ptr) ({if (ptr) {free(ptr); ptr=NULL;}})
 
 void link_cable_ISR(void);
 int64_t link_cable_watchdog(alarm_id_t id, void *user_data);
-bool print_usb(void *buf, size_t bufLen);
+bool print_usb(void *buf_, size_t bufLen, uint8_t prePrintBlanks, uint8_t postPrintBlanks);
 
 tusb_desc_device_t desc_device = {};
 int16_t gDaddr = -1;
@@ -29,13 +31,16 @@ uint16_t gPrinterWidth = 384;
 
 static uint8_t *gPrintData = NULL;
 static size_t gPrintDataSize = 0;
+static const struct PrintCFG *gPringCFG = NULL;
 
-void print_image(uint8_t *data, size_t data_len) {
+void print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
     gPrintData = data;
     gPrintDataSize = data_len;
+    gPringCFG = cfg;
 }
 
-void do_print_image(uint8_t *data, size_t data_len) {
+void do_print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
+    printf("Printing a chunk of data... %d\n", data_len);
     bool disableUSB = false;
     uint16_t printerWidth = gPrinterWidth;
 
@@ -134,7 +139,7 @@ void do_print_image(uint8_t *data, size_t data_len) {
     // --- BEGIN USB PRINTING ---
     if (!disableUSB){
         printf("printing on USB!\n");
-        print_usb(scaled_bytes_nrm, scaled_bytes_count_nrm);
+        print_usb(scaled_bytes_nrm, scaled_bytes_count_nrm, 0, cfg->postPrintMargins*13);
     }
     // --- END USB PRINTING
     safeFree(scaled_bytes_nrm);
@@ -216,6 +221,7 @@ void do_print_image(uint8_t *data, size_t data_len) {
     uint8_t nl[] = {0x0a};
     uint8_t end[] = {0x1b, 0x32};
 
+#ifdef ENABLE_UART_PRINTING
     printf("printing on UART!\n");
     uart_write_blocking(uart1, start, sizeof(start));
     for (uint8_t i=0; i<slice_num; i++) {
@@ -225,6 +231,7 @@ void do_print_image(uint8_t *data, size_t data_len) {
     }
     uart_write_blocking(uart1, end, sizeof(end));
     uart_puts(uart1, "\n\n\n");
+#endif
     // --- END PRINTING ---
 
     safeFree(slice_bytes);
@@ -254,10 +261,14 @@ int main() {
     info("--- gbprinter start ----\n");
 
     while (true) {
-        if (gPrintData && gPrintDataSize){
-            do_print_image(gPrintData, gPrintDataSize);
+        if (gPrintData){
+            if (gPrintDataSize){
+                do_print_image(gPrintData, gPrintDataSize, gPringCFG);
+            }
+            
             gPrintData = NULL;
             gPrintDataSize = 0;
+            gPringCFG = NULL;
             did_finish_printing();
         }
         tuh_task();                            
@@ -289,7 +300,7 @@ bool printSynchronous(void *buf, size_t bufLen){
     return ret;
 }
 
-bool print_usb(void *buf_, size_t bufLen){
+bool print_usb(void *buf_, size_t bufLen, uint8_t prePrintBlanks, uint8_t postPrintBlanks){
     uint8_t *buf = (uint8_t*)buf_;
     if (gDaddr == -1){
         printf("ERROR: no printer connected!");
@@ -304,17 +315,29 @@ bool print_usb(void *buf_, size_t bufLen){
 
     "\x1d\x76\x30\x00\x30\x00" //command height
     "\x41\x41" //placeholder values
-    "\x10\xff\xfe\x01" //command print
     ;
 
-    *((uint16_t*)&cmd_header[sizeof(cmd_header)-1-4-2]) = img_height; //is this even needed?
+    /*
+        If this matches the number of lines we actually print,
+        the printer automatically adds a blank footer (so that we don't cut mid-image)
+        We purposels set this value too high so that this automatic footer is never triggered.
+    */
+    *((uint16_t*)&cmd_header[sizeof(cmd_header)-1-2]) = img_height+prePrintBlanks+postPrintBlanks+1;
 
     char cmd_footer[] = "\x1b\x4a\x40\x10\xff\xfe\x45";
+
+    char empty_line[img_width/8];
+    memset(empty_line,0,sizeof(empty_line));
 
     if (!printSynchronous(cmd_header,sizeof(cmd_header)-1)){ //send header
             printf("ERROR: printing header failed!\n");
             return false;
     }
+
+    for (size_t i = 0; i < prePrintBlanks; i++){
+        printSynchronous(empty_line,sizeof(empty_line));
+    }
+    
     int i=0;
     while (bufLen > 0){
         size_t curChunk = (chunksize > bufLen) ? bufLen : chunksize;
@@ -327,13 +350,9 @@ bool print_usb(void *buf_, size_t bufLen){
         buf += curChunk;
     }
 
-    // {
-    //     char empty_line[122];
-    //     memset(empty_line,0,sizeof(empty_line));
-    //     for (size_t i = 0; i < 35; i++){
-    //         printSynchronous(empty_line,sizeof(empty_line));
-    //     }
-    // }
+    for (size_t i = 0; i < postPrintBlanks; i++){
+        printSynchronous(empty_line,sizeof(empty_line));
+    }
 
     if (!printSynchronous(cmd_footer,sizeof(cmd_footer)-1)){//send footer
             printf("ERROR: printing footer failed!\n");

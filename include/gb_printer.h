@@ -5,49 +5,53 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 
-// PI Pico printer
-#define PRINTER_DEVICE_ID       0x81
+struct PrintCFG {
+    /*
+        Number of Sheets to print
+        0 means line feed only
+    */
+    uint8_t sheets_num;
 
-#define PRN_COMMAND_INIT        0x01
-#define PRN_COMMAND_PRINT       0x02
-#define PRN_COMMAND_DATA        0x04
-#define PRN_COMMAND_BREAK       0x08
-#define PRN_COMMAND_STATUS      0x0F
 
-#define PRN_STATUS_LOWBAT       0x80
-#define PRN_STATUS_ER2          0x40
-#define PRN_STATUS_ER1          0x20
-#define PRN_STATUS_ER0          0x10
-#define PRN_STATUS_UNTRAN       0x08
-#define PRN_STATUS_FULL         0x04
-#define PRN_STATUS_BUSY         0x02
-#define PRN_STATUS_SUM          0x01
-#define PRN_STATUS_OK           0x00
+    /*
+        -25% exposure       : 0x00
+        default exposure    : 0x40
+        +25% exposure       : 0x7f
+    */
+    uint8_t exposure;
 
-#define TILE_SIZE               0x10
-#define PRINTER_WIDTH           20
-#define PRINTER_BUFFER_SIZE     (PRINTER_WIDTH * TILE_SIZE * 2)
+    /*
+        typically 0xE4 //todo: what does it mean??
+    */
+    uint8_t pallet;
 
-// PXLR-Studio-next transfer
-#define CAM_COMMAND_TRANSFER    0x10
-
-enum printer_state {
-    PRN_STATE_WAIT_FOR_SYNC_1,
-    PRN_STATE_WAIT_FOR_SYNC_2,
-    PRN_STATE_COMMAND,
-    PRN_STATE_COMPRESSION_INDICATOR,
-    PRN_STATE_LEN_LOWER,
-    PRN_STATE_LEN_HIGHER,
-    PRN_STATE_DATA,
-    PRN_STATE_CHECKSUM_1,
-    PRN_STATE_CHECKSUM_2,
-    PRN_STATE_DEVICE_ID,
-    PRN_STATE_STATUS
+    /*
+        GB Camera sends postPrintMargins=3, prePrintMargins=1 by default
+    */
+    uint8_t postPrintMargins : 4;
+    uint8_t prePrintMargins  : 4;
 };
 
-uint8_t protocol_data_init();
-uint8_t protocol_data_process(uint8_t data_in);
-void protocol_reset();
+//state machine
+void receive_config_write(uint8_t b);
+void receive_data_reset(void);
+int receive_data_write(uint8_t b);
+void receive_data_start_printing(void);
 
+void start_packet();
+void discard_packet();
+
+//external
 void did_finish_printing();
+
+//link cable
+uint8_t protocol_reset();
+void link_cable_ISR(void);
+int64_t link_cable_watchdog(alarm_id_t id, void *user_data);
+
+
+//implemented in main function
+void print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg);
+
+
 #endif

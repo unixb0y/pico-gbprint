@@ -2,7 +2,6 @@
 #define _GLOBALS_H_INCLUDE_
 
 #define ENABLE_DEBUG            false
-#define BUFFER_SIZE_KB          176
 
 // UART pins for thermal printer
 #define UART_PRINT_TX 4
