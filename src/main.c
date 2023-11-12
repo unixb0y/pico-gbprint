@@ -346,7 +346,7 @@ int main() {
     //uart_puts(uart1, "Hello World..\n\n\n");
 
     info("--- gbprinter start ----\n");
-
+    LED_ON;
     while (true) {
         if (gPrintData){
             if (gPrintDataSize){

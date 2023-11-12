@@ -70,6 +70,7 @@ uint8_t chk2 = 0;
 
 #pragma mark private functions
 uint8_t protocol_reset(){
+    LED_ON;
     receive_data_reset();
     printer_state = PRN_STATE_IDLE;
     printer_cmd = PRN_COMMAND_UNDEFINED;
@@ -90,6 +91,7 @@ uint8_t protocol_data_process(uint8_t data_in) {
 #endif
     switch (printer_state){
         case PRN_STATE_IDLE:
+            LED_ON;
             if (data_in != PRN_MAGIC_1) return protocol_reset();
             else printer_state = PRN_STATE_WAIT_MAGIC2;
             return 0;
@@ -147,6 +149,7 @@ uint8_t protocol_data_process(uint8_t data_in) {
             break;
 
         case PRN_STATE_RECV_DATA:
+            LED_OFF;
             switch (printer_cmd){
             case PRN_COMMAND_DATA:
                 if (receive_data_write(data_in)) status |= PRN_STATUS_FULL;
