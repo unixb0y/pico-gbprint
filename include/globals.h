@@ -3,6 +3,8 @@
 
 #define ENABLE_DEBUG            false
 
+#define LANGUAGE_ID 0x0409  // English
+
 // UART pins for thermal printer
 #define UART_PRINT_TX 4
 #define UART_PRINT_RX 5
@@ -13,10 +15,11 @@
 #define UART_DEBUG_RX 13
 
 // Macros for bit operations on arrays
-#define SetBit(A, k)    (A[(k)/8] |= (1 << ((k)%8)))
+#define SetBit(A, k)      (A[(k)/8] |= (1 << ((k)%8)))
 #define SetBitBIG(A, k)   (A[(k)/8] |= (1 << (7-((k)%8))))
-#define ClearBit(A, k) (A[(k)/8] &= ~(1 << ((k)%8)))
-#define TestBit(A, k)  (A[(k)/8] & (1 << ((k)%8)))
+#define ClearBit(A, k)    (A[(k)/8] &= ~(1 << ((k)%8)))
+#define TestBit(A, k)     (A[(k)/8] & (1 << ((k)%8)))
+#define TestBitBIG(A, k)  (A[(k)/8] & (1 << (7-((k)%8))))
 
 // LED pin, undefine to disable
 #define LED_PIN                 25

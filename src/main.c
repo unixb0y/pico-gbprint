@@ -14,7 +14,7 @@
 #include "mew.h"
 #include "gb_printer.h"
 
-// #define ENABLE_UART_PRINTING
+#define ENABLE_UART_PRINTING
 
 #define info(a ...) printf("[gbprinter] " a)
 #define safeFree(ptr) ({if (ptr) {free(ptr); ptr=NULL;}})
@@ -27,25 +27,21 @@ tusb_desc_device_t desc_device = {};
 int16_t gDaddr = -1;
 uint16_t gPrinterWidth = 384;
 
-#define LANGUAGE_ID 0x0409  // English
-
 static uint8_t *gPrintData = NULL;
 static size_t gPrintDataSize = 0;
-static const struct PrintCFG *gPringCFG = NULL;
+static const struct PrintCFG *gPrintCFG = NULL;
 
 void print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
     gPrintData = data;
     gPrintDataSize = data_len;
-    gPringCFG = cfg;
+    gPrintCFG = cfg;
 }
 
 void do_print_image_uart(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
-    uint16_t printerWidth = gPrinterWidth;
+    uint16_t printerWidth = 320;
 
-    if (printerWidth < 320){
-        printf("ERROR: usb printer width smaller than hardcoded with");
-        printerWidth = 320;
-    }
+    uint8_t *printbuf = NULL;
+    size_t printBufSize = 0;
 
     uint16_t tilebuffer_size = data_len;
     uint16_t bit_size = tilebuffer_size*4; // 8 bits per byte, 2 bits per pixel 
@@ -58,13 +54,9 @@ void do_print_image_uart(uint8_t *data, size_t data_len, const struct PrintCFG *
     // number of tiles in horizontal direction
     uint16_t tile_width = image_width/8;
     uint16_t image_size = image_width*image_height;
-    
-    // pixel_bytes is just a binary bitmap of the 2BPP image
-    uint16_t pixel_bytes_count = image_size/8;
-    uint8_t *pixel_bytes_nrm = (uint8_t *)malloc(pixel_bytes_count * sizeof(uint8_t));
-    uint8_t *pixel_bytes_rot = (uint8_t *)malloc(pixel_bytes_count * sizeof(uint8_t));
-    memset(pixel_bytes_nrm, 0, pixel_bytes_count);
-    memset(pixel_bytes_rot, 0, pixel_bytes_count);
+
+    printBufSize = (printerWidth*image_height)*2/8;
+    printbuf = calloc(printBufSize, 1);
 
     for (uint16_t t=0; t<tile_count; t++) {
         uint8_t tile_x = t%tile_width;
@@ -79,153 +71,64 @@ void do_print_image_uart(uint8_t *data, size_t data_len, const struct PrintCFG *
 
             for (uint8_t j=0; j<8; j++) {
                 uint16_t offset_printbit = tile_x*8 + i*2*image_width/2 + j + tile_y*tile_width*64;
+                uint8_t pixel_val = ((byte0 >> (8-1-j)) & 1) << 1 | ((byte1 >> (8-1-j)) & 1);
                 // 2BPP conversion: combine the 2 bytes bit-wise to get the pixel's shade from 0b00 to 0b11
-                // We just check if it's > 0 since the printer only prints in black and white...
-                if ((((byte0 >> (8-1-j)) & 1) << 1 | ((byte1 >> (8-1-j)) & 1)) > 0) {
-                    // Some whacky calculations to translate the pixels by 90 degrees counter-clockwise
-                    uint16_t rot_idx = bit_size - (((offset_printbit % image_width)+1)*image_height - offset_printbit/image_width);
-                    uint16_t nrm_idx = offset_printbit;
-                    SetBit(pixel_bytes_rot, image_size-1-rot_idx);
-                    SetBit(pixel_bytes_nrm, image_size-1-nrm_idx);
+                uint32_t w = offset_printbit % image_width;
+                uint32_t h = offset_printbit / image_width;
+
+                switch (pixel_val) {
+                    case 1: 
+                        SetBitBIG(printbuf, (2*h+0)*printerWidth + 2*w+0);
+                        break;
+                    case 2:
+                        SetBitBIG(printbuf, (2*h+0)*printerWidth + 2*w+1);
+                        SetBitBIG(printbuf, (2*h+1)*printerWidth + 2*w+0);
+                        break;
+
+                    case 3:
+                        SetBitBIG(printbuf, (2*h+0)*printerWidth + 2*w+0);
+                        SetBitBIG(printbuf, (2*h+0)*printerWidth + 2*w+1);
+                        SetBitBIG(printbuf, (2*h+1)*printerWidth + 2*w+0);
+                        SetBitBIG(printbuf, (2*h+1)*printerWidth + 2*w+1);
+                        break;
+                    default:
+                        break;
                 }
             }
         }
     }
 
-    //printf("Bytes of rotated bit image:\n");
-    //for(int i=0; i<image_size/8; i++) {
-    //    printf("%02X", pixel_bytes[image_size/8-1-i]);
-    //}
-    //printf("\n-----\n");
-
-    uint32_t scaled_bytes_count_nrm = 2*image_height*printerWidth/8;
-    uint8_t *scaled_bytes_nrm = (uint8_t *)malloc(scaled_bytes_count_nrm * sizeof(uint8_t));
-    memset(scaled_bytes_nrm, 0, scaled_bytes_count_nrm);
-
-
-    // --- BEGIN 4x integer scaling of the normal image ---
-    uint32_t halfPad = 0;//(printerWidth-image_width*2)/2;
-    for (uint16_t h = 0; h < image_height; h++){
-        uint16_t th = (image_height-h-1);
-        for (uint16_t w = 0; w < image_width; w++){
-            uint16_t tw = (image_width-w-1);
-            if (TestBit(pixel_bytes_nrm,h*image_width + w)){
-                SetBitBIG(scaled_bytes_nrm,(2*th)*printerWidth   + tw*2-0 + halfPad);
-                SetBitBIG(scaled_bytes_nrm,(2*th)*printerWidth   + tw*2-1 + halfPad);
-                SetBitBIG(scaled_bytes_nrm,(2*th-1)*printerWidth + tw*2-0 + halfPad);
-                SetBitBIG(scaled_bytes_nrm,(2*th-1)*printerWidth + tw*2-1 + halfPad);
-            }
-        }
-    }
-
-    // printf("Bytes of scaled bit image:\n");
-    // for(int i=0; i<scaled_bytes_count_nrm; i++) {
-    //     uint8_t b = scaled_bytes_nrm[scaled_bytes_count_nrm-1-i];
-    //     printf("%d%d%d%d%d%d%d%d",  (b >> 7) & 1,
-    //                                 (b >> 6) & 1,
-    //                                 (b >> 5) & 1,
-    //                                 (b >> 4) & 1,
-    //                                 (b >> 3) & 1,
-    //                                 (b >> 2) & 1,
-    //                                 (b >> 1) & 1,
-    //                                 (b >> 0) & 1);
+    // printf("Bytes of scaled up bit image:\n");
+    // for(int i=0; i<printBufSize; i++) {
+    //    printf("%02X", printbuf[i]);
     // }
     // printf("\n-----\n");
 
+    // // slice_bytes stores the upscaled image in rotated slices of 24x320px
+    // uint8_t *slice_bytes = (uint8_t *)malloc(printBufSize * sizeof(uint8_t));
+    // memset(slice_bytes, 0, printBufSize);
 
-    safeFree(scaled_bytes_nrm);
-    safeFree(pixel_bytes_nrm);
-
-    // scaled_bytes stores the 4x integer-upscaled version of it
-    uint16_t scaled_bytes_count_rot = 4*pixel_bytes_count;
-    uint8_t *scaled_bytes_rot = (uint8_t *)malloc(scaled_bytes_count_rot * sizeof(uint8_t));
-    memset(scaled_bytes_rot, 0, scaled_bytes_count_rot);
-
-    // --- BEGIN 4x integer scaling of the rotated image ---
-    uint16_t w = image_height;
-    uint16_t h = image_width;
-    for (uint32_t nb=0; nb<(w*h*4); nb++) {
-        uint32_t oldrow = nb/(w*2)/2;
-        uint32_t oldcol = nb%(w*2)/2;
-        uint32_t oldidx = oldrow*w+oldcol;
-        if (TestBit(pixel_bytes_rot, w*h-1-oldidx) > 0) {
-            SetBit(scaled_bytes_rot, w*h*4-1-nb);
-        }
-    }
-
-    safeFree(pixel_bytes_rot);
-
-
-    // printf("Bytes of scaled bit image:\n");
-    // for(int i=0; i<4*image_size/8; i++) {
-    //    printf("%02X", scaled_bytes_nrm[4*image_size/8-1-i]);
+    // // --- BEGIN SLICING ---
+    // uint32_t slice_num = image_height*2 / 24;
+    // uint16_t cw = 320;
+    // uint16_t ch = 24;
+    // uint16_t chunk_size = cw*ch;
+    // for (uint32_t i=0; i<image_width*image_height*4; i++) {
+    //     uint32_t new_idx = (i/chunk_size)*chunk_size + (i/cw)%ch + ch*(i%cw);
+    //     if (TestBitBIG(printbuf, i)) SetBitBIG(slice_bytes, new_idx);
     // }
-    // printf("\n-----\n");
-    // --- END SCALING ---
-
-
-
-    // slice_bytes stores the upscaled image in slices of 24x160px
-    uint8_t *slice_bytes = (uint8_t *)malloc(scaled_bytes_count_rot * sizeof(uint8_t));
-    memset(slice_bytes, 0, scaled_bytes_count_rot);
-
-    // --- BEGIN SLICING ---
-    uint8_t slice_width = 24;
-    w = image_height*2;
-    h = image_width*2;
-    uint32_t slice_num = w/slice_width;
-    uint32_t pixel_size = w*h;
-    uint32_t slice_size = slice_width*h;
-
-    for (uint32_t byte_idx = 0; byte_idx < scaled_bytes_count_rot; byte_idx++) {
-        /* non-flipped version
-        uint32_t offset_idx = (((byte_idx/3)%h)*(w/8) + byte_idx%3 + 3*(byte_idx/(3*h)));
-        */
-        uint32_t offset_idx = ((h-1-(byte_idx/3)%h)*(w/8) + byte_idx%3 + 3*(byte_idx/(3*h)));
-        offset_idx = scaled_bytes_count_rot-1-offset_idx;
-        memcpy(&slice_bytes[byte_idx], &scaled_bytes_rot[offset_idx], 1);
-    }
-
-    safeFree(scaled_bytes_rot);
-
-    //printf("Bytes of sliced bit image (slice 1):\n");
-    //for(int i=1*960; i<2*960; i++) {
-    //    printf("%02X", slice_bytes[i]);
-    //}
-    //printf("\n-----\n");
-    // --- END SLICING ---
-
+ 
     // --- BEGIN PRINTING ---
-    // Header: 
-    // ESC * 0x21 width (0x0140 = 320 pixels)
-    //
-    // Protocol:
-    // Send 0x1b, 0x33, 0x10
-    //
-    // For each slice:
-    // Send header + slice + 0x0a
-    //
-    // At the end:
-    // Send 0x1b, 0x32
-    uint8_t start[] = {0x1b, 0x33, 0x10};
-    uint8_t header[] = {0x1b, 0x2a, 0x21, 0x40, 0x01};
-    uint8_t nl[] = {0x0a};
-    uint8_t end[] = {0x1b, 0x32};
-
-#ifdef ENABLE_UART_PRINTING
-    printf("printing on UART!\n");
-    uart_write_blocking(uart1, start, sizeof(start));
-    for (uint8_t i=0; i<slice_num; i++) {
-        uart_write_blocking(uart1, header, sizeof(header));
-        uart_write_blocking(uart1, &slice_bytes[i*(2*image_width)*3], (2*image_width)*3);
-        uart_write_blocking(uart1, nl, 1);
-    }
-    uart_write_blocking(uart1, end, sizeof(end));
-    uart_puts(uart1, "\n\n\n");
-#endif
+    // Header format: 1D | 7630 | 00 | byte width (40 bytes) | pixel height
+    uint8_t header[] = {0x1d, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00};
+    header[4] = image_width*2/8 & 0xff;
+    header[5] = image_width*2/8 >> 8;
+    header[6] = image_height*2 & 0xff;
+    header[7] = image_height*2 >> 8;
+    uart_write_blocking(uart1, header, sizeof(header));
+    uart_write_blocking(uart1, printbuf, printBufSize);
     // --- END PRINTING ---
-
-    safeFree(slice_bytes);
+    safeFree(printbuf);
 }
 
 void do_print_image_usb(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
@@ -317,7 +220,7 @@ error:
 }
 
 void do_print_image(uint8_t *data, size_t data_len, const struct PrintCFG *cfg) {
-    printf("Printing a chunk of data... %d\n", data_len);
+    printf("Printing a chunk of data... %d bytes.\n", data_len);
     do_print_image_usb(data,data_len,cfg);
 #ifdef ENABLE_UART_PRINTING
     do_print_image_uart(data,data_len,cfg);
@@ -350,12 +253,12 @@ int main() {
     while (true) {
         if (gPrintData){
             if (gPrintDataSize){
-                do_print_image(gPrintData, gPrintDataSize, gPringCFG);
+                do_print_image(gPrintData, gPrintDataSize, gPrintCFG);
             }
             
             gPrintData = NULL;
             gPrintDataSize = 0;
-            gPringCFG = NULL;
+            gPrintCFG = NULL;
             did_finish_printing();
         }
         tuh_task();                            
@@ -390,7 +293,7 @@ bool printSynchronous(void *buf, size_t bufLen){
 bool print_usb(void *buf_, size_t bufLen, uint8_t prePrintBlanks, uint8_t postPrintBlanks){
     uint8_t *buf = (uint8_t*)buf_;
     if (gDaddr == -1){
-        printf("ERROR: no printer connected!");
+        printf("ERROR: no printer connected!\n");
         return false;
     }
     uint32_t chunksize = 0x800;
